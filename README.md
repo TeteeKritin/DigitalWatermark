@@ -19,13 +19,12 @@ Make sure you have Python installed, then install the required packages:
 
 ```bash
 pip install pillow opencv-python numpy matplotlib scikit-image PyQt5
-
+```
 ## 🖥️ How to Run
 
 ### ✅ Option 1: Run the GUI
 
-```
 ```bash
 python watermarking.py
-
+```
 
