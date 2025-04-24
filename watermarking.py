@@ -2,12 +2,12 @@ import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, 
                             QVBoxLayout, QHBoxLayout, QFileDialog, QTextEdit,
-                            QGroupBox, QRadioButton, QSpinBox, QDoubleSpinBox)
-from PyQt5.QtGui import QPixmap, QImage
+                            QGroupBox, QRadioButton, QDoubleSpinBox)
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
 from PIL import Image
 import numpy as np
-import cv2
+
 class WatermarkingApp(QWidget):
 
     def __init__(self):
@@ -19,7 +19,6 @@ class WatermarkingApp(QWidget):
         self.host_path = ''
         self.watermark_path = ''
         self.method = 'LSB'  # Default method
-        self.alpha = 0.03  # DCT strength
         
         # Create UI
         self.init_ui()
@@ -35,21 +34,13 @@ class WatermarkingApp(QWidget):
         method_group = QGroupBox("Watermarking Method")
         method_layout = QVBoxLayout()
         self.lsb_radio = QRadioButton("LSB (Simple)")
-        self.dct_radio = QRadioButton("DCT (Robust)")
         self.lsb_radio.setChecked(True)
         method_layout.addWidget(self.lsb_radio)
-        method_layout.addWidget(self.dct_radio)
         method_group.setLayout(method_layout)
         
-        # Parameters
+        # Parameters (remove DCT parameters)
         param_group = QGroupBox("Parameters")
         param_layout = QVBoxLayout()
-        self.alpha_spin = QDoubleSpinBox()
-        self.alpha_spin.setRange(0.01, 0.2)
-        self.alpha_spin.setSingleStep(0.01)
-        self.alpha_spin.setValue(0.03)
-        self.alpha_spin.setPrefix("DCT Strength: ")
-        param_layout.addWidget(self.alpha_spin)
         param_group.setLayout(param_layout)
         
         # Image selection buttons
@@ -150,9 +141,6 @@ class WatermarkingApp(QWidget):
             try:
                 if self.lsb_radio.isChecked():
                     self.embed_lsb(self.host_path, self.watermark_path, output_path)
-                else:
-                    self.alpha = self.alpha_spin.value()
-                    self.embed_dct(self.host_path, self.watermark_path, output_path)
                 self.log(f"Success! Watermarked image saved to:\n{output_path}")
             except Exception as e:
                 self.log(f"Error during embedding: {str(e)}")
@@ -171,15 +159,6 @@ class WatermarkingApp(QWidget):
                 try:
                     if self.lsb_radio.isChecked():
                         self.extract_lsb(file_name, output_path)
-                    else:
-                        original_path, _ = QFileDialog.getOpenFileName(
-                            self, 'Select Original Host Image (for DCT extraction)')
-                        if original_path:
-                            self.alpha = self.alpha_spin.value()
-                            self.extract_dct(file_name, original_path, output_path)
-                        else:
-                            self.log("DCT extraction requires original host image")
-                            return
                     self.log(f"Success! Extracted watermark saved to:\n{output_path}")
                 except Exception as e:
                     self.log(f"Error during extraction: {str(e)}")
@@ -195,9 +174,10 @@ class WatermarkingApp(QWidget):
         host_pixels = np.array(host_img)
         watermark_pixels = np.array(watermark_img)
         
-        # Normalize watermark to 0-1
+        # Normalize watermark to 0-1 
+        #MOre than 127 mean 1
+        #less than 127 mean 0
         watermark_binary = (watermark_pixels > 127).astype(np.uint8)
-        
         # Embed in LSB of red channel
         watermarked_pixels = host_pixels.copy()
         watermarked_pixels[:, :, 0] = (host_pixels[:, :, 0] & ~1) | watermark_binary
@@ -210,100 +190,9 @@ class WatermarkingApp(QWidget):
         watermarked_pixels = np.array(watermarked_img)
         
         # Extract LSB from red channel
-        extracted_bits = (watermarked_pixels[:, :, 0] & 1) * 255
+        extracted_bits = (watermarked_pixels[:, :, 0] & 1) * 255    
         extracted_img = Image.fromarray(extracted_bits.astype(np.uint8))
         extracted_img.save(output_path)
-    
-    def embed_dct(self, host_path, watermark_path, output_path):
-        host = cv2.imread(host_path)
-        watermark = cv2.imread(watermark_path, cv2.IMREAD_GRAYSCALE)
-        
-        # Convert to YCbCr and work on Y channel
-        host_ycbcr = cv2.cvtColor(host, cv2.COLOR_BGR2YCrCb)
-        y_channel = host_ycbcr[:,:,0].astype(np.float32)
-        
-        # Resize watermark and convert to binary
-        watermark = cv2.resize(watermark, (y_channel.shape[1], y_channel.shape[0]))
-        watermark_binary = (watermark > 127).astype(np.uint8)
-        
-        # Process in 8x8 blocks
-        block_size = 8
-        watermarked = y_channel.copy()
-        rows, cols = y_channel.shape
-        
-        for i in range(0, rows, block_size):
-            for j in range(0, cols, block_size):
-                if i + block_size > rows or j + block_size > cols:
-                    continue
-                    
-                block = y_channel[i:i+block_size, j:j+block_size]
-                dct_block = cv2.dct(block)
-                
-                # Embed in mid-frequency coefficients
-                coeff1 = (3, 4)
-                coeff2 = (4, 3)
-                avg_coeff = (dct_block[coeff1] + dct_block[coeff2]) / 2
-                
-                # Get the current watermark bit
-                wm_bit = watermark_binary[i//block_size, j//block_size]
-                
-                if wm_bit:
-                    dct_block[coeff1] = avg_coeff + self.alpha * abs(avg_coeff)
-                    dct_block[coeff2] = avg_coeff + self.alpha * abs(avg_coeff)
-                else:
-                    dct_block[coeff1] = avg_coeff - self.alpha * abs(avg_coeff)
-                    dct_block[coeff2] = avg_coeff - self.alpha * abs(avg_coeff)
-                
-                watermarked[i:i+block_size, j:j+block_size] = cv2.idct(dct_block)
-        
-        # Convert back to BGR
-        host_ycbcr[:,:,0] = np.clip(watermarked, 0, 255)
-        watermarked_bgr = cv2.cvtColor(host_ycbcr, cv2.COLOR_YCrCb2BGR)
-        cv2.imwrite(output_path, watermarked_bgr)
-    
-    def extract_dct(self, watermarked_path, original_path, output_path):
-        watermarked = cv2.imread(watermarked_path)
-        original = cv2.imread(original_path)
-        
-        # Convert to YCbCr and get Y channels
-        wm_ycbcr = cv2.cvtColor(watermarked, cv2.COLOR_BGR2YCrCb)
-        orig_ycbcr = cv2.cvtColor(original, cv2.COLOR_BGR2YCrCb)
-        
-        wm_y = wm_ycbcr[:,:,0].astype(np.float32)
-        orig_y = orig_ycbcr[:,:,0].astype(np.float32)
-        
-        # Process in 8x8 blocks
-        block_size = 8
-        rows, cols = wm_y.shape
-        secret = np.zeros((rows//block_size, cols//block_size), dtype=np.uint8)
-        
-        for i in range(0, rows, block_size):
-            for j in range(0, cols, block_size):
-                if i + block_size > rows or j + block_size > cols:
-                    continue
-                    
-                # Get both blocks
-                wm_block = wm_y[i:i+block_size, j:j+block_size]
-                orig_block = orig_y[i:i+block_size, j:j+block_size]
-                
-                # Apply DCT
-                wm_dct = cv2.dct(wm_block)
-                orig_dct = cv2.dct(orig_block)
-                
-                # Check the same coefficients
-                coeff1 = (3, 4)
-                coeff2 = (4, 3)
-                
-                # Calculate differences
-                diff1 = wm_dct[coeff1] - orig_dct[coeff1]
-                diff2 = wm_dct[coeff2] - orig_dct[coeff2]
-                
-                # Determine the bit
-                if (diff1 + diff2) > 0:
-                    secret[i//block_size, j//block_size] = 255
-        
-        # Save the extracted watermark
-        cv2.imwrite(output_path, secret)
 
 def main():
     app = QApplication(sys.argv)
